@@ -118,6 +118,9 @@ type ExecArgs struct {
 	VSockDevPath  string   // The directory inside the monitor rootfs with the vAccel unix sockets
 	VSockDevID    int      // The guest-cid
 	SocketPath    string   // The path of the monitor's control socket (empty means no control socket)
+	Machine       string   // The machine type of the monitor (QEMU only, empty means the monitor's default)
+	FirmwarePath  string   // The firmware image to boot (QEMU only, empty means the monitor's default BIOS)
+	TEE           string   // The requested confidential guest type (empty, "sev-snp" or "tdx")
 	Net           NetDevParams
 	Sharedfs      SharedfsParams
 }
@@ -149,4 +152,28 @@ type MonitorConfig struct {
 	DataPath        string `toml:"data_path,omitempty"`   // Optional path to the hypervisor data files (e.g. qemu bios stuff)
 	Vhost           bool   `toml:"vhost,omitempty"`       // Optional: enable vhost for network performance optimization
 	SocketPath      string `toml:"socket_path,omitempty"` // Optional path for the monitor's control socket (unset means no control socket)
+	// Machine selects the machine type of the monitor (QEMU only). Supported
+	// values are "pc" (default), "q35" and "microvm". Other monitors ignore it.
+	Machine string `toml:"machine,omitempty"`
+	// FirmwarePath is an optional firmware image (e.g. OVMF, Oak stage0) that
+	// the monitor boots instead of its built-in BIOS. It is bind-mounted read-only
+	// into the monitor rootfs. QEMU only.
+	FirmwarePath string `toml:"firmware_path,omitempty"`
+	// TEE requests a confidential guest ("sev-snp" or "tdx"). Experimental:
+	// it only adds the monitor flags; it does not validate the host.
+	TEE string `toml:"tee,omitempty"`
 }
+
+// Supported values for MonitorConfig.Machine
+const (
+	MachinePC      string = "pc"
+	MachineQ35     string = "q35"
+	MachineMicrovm string = "microvm"
+)
+
+// Supported values for MonitorConfig.TEE
+const (
+	TEENone   string = ""
+	TEESevSnp string = "sev-snp"
+	TEETdx    string = "tdx"
+)

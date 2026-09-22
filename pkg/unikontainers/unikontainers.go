@@ -221,7 +221,7 @@ func (u *Unikontainer) InitialSetup() error {
 		return fmt.Errorf("pre setup step for rootfs failed: %w", err)
 	}
 
-	monRes, err := getMonitorResources(rfsBuilder, rootfsParams, vmm, u.UruncCfg.Monitors[vmmType].DataPath)
+	monRes, err := getMonitorResources(rfsBuilder, rootfsParams, vmm, u.UruncCfg.Monitors[vmmType])
 	if err != nil {
 		return err
 	}
@@ -387,11 +387,12 @@ func ChooseRootfs(bundle, specRoot string, annot map[string]string, cfg *UruncCo
 
 // getMonitorResources collects every mount and device required for the monitor's
 // execution environment, plus the block parameters passed to the guest.
-func getMonitorResources(rfs rootfsBuilder, rootfsParams types.RootfsParams, vmm types.VMM, monitorDataPath string) (monitorResources, error) {
+func getMonitorResources(rfs rootfsBuilder, rootfsParams types.RootfsParams, vmm types.VMM, monitorCfg types.MonitorConfig) (monitorResources, error) {
+	monitorDataPath := monitorCfg.DataPath
 	var res monitorResources
 	var err error
 
-	res.Mounts, err = mountsForMonitor(vmm.Path(), monitorDataPath)
+	res.Mounts, err = mountsForMonitor(vmm.Path(), monitorDataPath, monitorCfg.FirmwarePath)
 	if err != nil {
 		return res, err
 	}
@@ -510,7 +511,7 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 		defaultVCPUs = 1
 	}
 	defaultMemSizeMB := u.UruncCfg.Monitors[vmmType].DefaultMemoryMB
-	socketPath := u.UruncCfg.Monitors[vmmType].SocketPath
+	monitorCfg := u.UruncCfg.Monitors[vmmType]
 
 	vmmArgs := types.ExecArgs{
 		ContainerID:   u.State.ID,
@@ -519,7 +520,10 @@ func (u *Unikontainer) buildMonitorSpec(rootfsParams types.RootfsParams, monRes 
 		Seccomp:       true, // Enable Seccomp by default
 		MemSizeB:      monitorMemoryBytes(defaultMemSizeMB, u.Spec.Linux.Resources),
 		VCPUs:         uint(defaultVCPUs),
-		SocketPath:    socketPath,
+		SocketPath:    monitorCfg.SocketPath,
+		Machine:       monitorCfg.Machine,
+		FirmwarePath:  monitorCfg.FirmwarePath,
+		TEE:           monitorCfg.TEE,
 		Environment:   os.Environ(),
 	}
 

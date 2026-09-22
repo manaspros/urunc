@@ -168,6 +168,9 @@ Each monitor subsection supports the following options:
 | `data_path` | string | (empty) | Optional custom path for the monitor's data file directory |
 | `vhost` | boolean | `false` | Optional: enable `vhost-net` for the monitor's network device, to improve network performance. Currently only honored by the `qemu` monitor |
 | `socket_path` | string | (empty) | Optional path for the monitor's control socket. If not set, the monitor runs without a control socket |
+| `machine` | string | (empty) | Optional machine type. Currently only honored by the `qemu` monitor: `pc` (the default), `q35` or `microvm` |
+| `firmware_path` | string | (empty) | Optional firmware image (e.g. OVMF, Oak stage0) that the monitor boots instead of its built-in BIOS. Currently only honored by the `qemu` monitor |
+| `tee` | string | (empty) | Experimental: request a confidential guest, `sev-snp` or `tdx`. Requires `firmware_path` and, for `tdx`, `machine = "q35"`. Currently only honored by the `qemu` monitor |
 
 Since Qemu is the only currently supported monitor which requires extra data to
 boot a VM, `urunc` will first check `/usr/local/share` and then `/usr/share` for
@@ -195,6 +198,30 @@ privileges to the monitor's user, so the path is subject to two constraints:
 signal) and when it is deleted, so a restart that reuses the same `socket_path`
 does not find a stale socket.
 
+The `machine` option selects the QEMU machine type. The default (`pc`) keeps
+the command line that `urunc` always used. With `microvm`, `urunc` adds
+`-M microvm,acpi=on` and exposes the network and block devices over
+virtio-mmio (`virtio-net-device`, `virtio-blk-device`), so the guest kernel must
+support `CONFIG_VIRTIO_MMIO` and ACPI. With `q35`, the devices stay on PCI.
+
+The `firmware_path` option points to a firmware image that QEMU boots with
+`-bios` instead of SeaBIOS. The kernel and the initrd are still passed with
+`-kernel` and `-initrd` and reach the firmware over `fw_cfg`, so the firmware
+must support loading a kernel from `fw_cfg` (OVMF and Oak stage0 do). `urunc`
+bind-mounts the file read-only inside the monitor's rootfs, at the same path.
+
+The `tee` option is experimental and requests a confidential guest. It only
+adds the respective QEMU objects; it does not check whether the host supports
+them, nor does it provide any attestation. For `sev-snp`, `urunc` adds the
+`sev-snp-guest` object with `kernel-hashes=on` and a `memory-backend-memfd`
+backend, and the firmware must be able to run as an SEV-SNP guest (e.g. the
+OVMF `AmdSev` build or Oak stage0). For `tdx`, `urunc` adds the `tdx-guest`
+object and the split irqchip, the machine type must be `q35`, and the firmware
+must be a TDVF image (the OVMF `IntelTdx` build). In both cases the virtio
+devices get `iommu_platform=on` (and `disable-legacy=on` on PCI), as
+confidential Linux guests require. Shared filesystems are not available for
+confidential guests.
+
 **Example:**
 
 ```toml
@@ -204,6 +231,8 @@ default_vcpus = 4
 path = "/usr/local/bin/qemu-system-x86_64"
 data_path = "/usr/local/share/"
 vhost = false
+machine = "microvm"
+firmware_path = "/usr/share/urunc/stage0_bin"
 
 [monitors.firecracker]
 default_memory_mb = 512

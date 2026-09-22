@@ -290,6 +290,107 @@ func TestQemuBuildExecCmd(t *testing.T) {
 			mustContain: []string{"vhost-vsock-pci", "guest-cid=42"},
 		},
 		{
+			name: "explicit pc machine keeps the implicit default (no -M)",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath,
+				Command:       testCommand,
+				Machine:       types.MachinePC,
+			},
+			unikernel:      &fakeUnikernel{},
+			mustNotContain: []string{"-M pc", "-M q35", "-M microvm"},
+		},
+		{
+			name: "q35 machine renders -M q35",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath,
+				Command:       testCommand,
+				Machine:       types.MachineQ35,
+			},
+			unikernel:   &fakeUnikernel{},
+			mustContain: []string{"-M q35"},
+		},
+		{
+			name: "microvm machine renders -M microvm,acpi=on and virtio-mmio devices",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath,
+				Command:       testCommand,
+				Machine:       types.MachineMicrovm,
+				Net:           types.NetDevParams{TapDev: "tap0", MAC: "52:54:00:12:34:56", MTU: 1500},
+			},
+			unikernel: &fakeUnikernel{blockCli: []types.MonitorBlockArgs{{ID: "rootfs", Path: "/dev/dm-1"}}},
+			mustContain: []string{
+				"-M microvm,acpi=on",
+				"-device virtio-net-device,netdev=net0,host_mtu=1500,mac=52:54:00:12:34:56",
+				"-device virtio-blk-device,serial=rootfs,drive=rootfs",
+			},
+			mustNotContain: []string{"virtio-net-pci", "virtio-blk-pci", "scsi=off", "iommu_platform"},
+		},
+		{
+			name: "FirmwarePath renders -bios before -kernel",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath,
+				Command:       testCommand,
+				FirmwarePath:  "/usr/share/urunc/stage0_bin",
+			},
+			unikernel:   &fakeUnikernel{},
+			mustContain: []string{"-bios /usr/share/urunc/stage0_bin -kernel " + testKernelPath},
+		},
+		{
+			name: "sev-snp on microvm renders the confidential objects and TEE virtio options",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath,
+				Command:       testCommand,
+				Machine:       types.MachineMicrovm,
+				FirmwarePath:  "/usr/share/urunc/stage0_bin",
+				TEE:           types.TEESevSnp,
+				MemSizeB:      128 * 1000 * 1000,
+				Net:           types.NetDevParams{TapDev: "tap0", MAC: "52:54:00:12:34:56", MTU: 1500},
+			},
+			unikernel: &fakeUnikernel{},
+			mustContain: []string{
+				"-M microvm,acpi=on,confidential-guest-support=sev0,memory-backend=ram1",
+				"-object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=on",
+				"-object memory-backend-memfd,id=ram1,size=128M,share=true,prealloc=false",
+				"-bios /usr/share/urunc/stage0_bin",
+				"virtio-net-device,netdev=net0,host_mtu=1500,mac=52:54:00:12:34:56,iommu_platform=on",
+			},
+			mustNotContain: []string{"disable-legacy"},
+		},
+		{
+			name: "sev-snp on q35 renders PCI devices with iommu_platform and disable-legacy",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath,
+				Command:       testCommand,
+				Machine:       types.MachineQ35,
+				FirmwarePath:  "/usr/share/urunc/AMDSEV.fd",
+				TEE:           types.TEESevSnp,
+				Net:           types.NetDevParams{TapDev: "tap0", MAC: "52:54:00:12:34:56", MTU: 1500},
+			},
+			unikernel: &fakeUnikernel{blockCli: []types.MonitorBlockArgs{{ID: "rootfs", Path: "/dev/dm-1"}}},
+			mustContain: []string{
+				"-M q35,confidential-guest-support=sev0,memory-backend=ram1",
+				"virtio-net-pci,netdev=net0,host_mtu=1500,mac=52:54:00:12:34:56,iommu_platform=on,disable-legacy=on",
+				"virtio-blk-pci,serial=rootfs,drive=rootfs,iommu_platform=on,disable-legacy=on,scsi=off",
+			},
+		},
+		{
+			name: "tdx on q35 renders tdx-guest with split irqchip",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath,
+				Command:       testCommand,
+				Machine:       types.MachineQ35,
+				FirmwarePath:  "/usr/share/urunc/OVMF.fd",
+				TEE:           types.TEETdx,
+			},
+			unikernel: &fakeUnikernel{},
+			mustContain: []string{
+				"-M q35,kernel-irqchip=split,confidential-guest-support=tdx0",
+				"-object tdx-guest,id=tdx0",
+				"-bios /usr/share/urunc/OVMF.fd",
+			},
+			mustNotContain: []string{"sev-snp-guest", "memory-backend-memfd"},
+		},
+		{
 			// The kernel command line must come out as -append followed by the
 			// full command as a single argument. Asserting the whole substring
 			// in the joined output is enough to confirm that.
@@ -371,4 +472,53 @@ func TestQemuGuestCommandIsASingleAppendValue(t *testing.T) {
 	assert.Equal(t, "-append", got[len(got)-2])
 	assert.Equal(t, "console=ttyS0 root=/dev/vda", got[len(got)-1],
 		"qemu must receive the guest cmdline as a single element")
+}
+
+func TestQemuMachineAndTEEErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args types.ExecArgs
+	}{
+		{
+			name: "unknown machine type is rejected",
+			args: types.ExecArgs{UnikernelPath: testKernelPath, Machine: "isapc"},
+		},
+		{
+			name: "unknown tee type is rejected",
+			args: types.ExecArgs{UnikernelPath: testKernelPath, TEE: "sgx", FirmwarePath: "/fw"},
+		},
+		{
+			name: "sev-snp without firmware is rejected",
+			args: types.ExecArgs{UnikernelPath: testKernelPath, TEE: types.TEESevSnp},
+		},
+		{
+			name: "tdx without firmware is rejected",
+			args: types.ExecArgs{UnikernelPath: testKernelPath, TEE: types.TEETdx, Machine: types.MachineQ35},
+		},
+		{
+			name: "tdx requires q35",
+			args: types.ExecArgs{UnikernelPath: testKernelPath, TEE: types.TEETdx, Machine: types.MachineMicrovm, FirmwarePath: "/fw"},
+		},
+		{
+			name: "virtiofs is rejected for confidential guests",
+			args: types.ExecArgs{
+				UnikernelPath: testKernelPath, TEE: types.TEESevSnp, Machine: types.MachineQ35, FirmwarePath: "/fw",
+				Sharedfs: types.SharedfsParams{Type: "virtiofs", Path: "/cntrRootfs"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if runtime.GOARCH != "amd64" {
+				t.Skip("confidential guests are only supported on x86_64")
+			}
+			q := &Qemu{binary: QemuBinary, binaryPath: testQemuBinary}
+			_, err := q.BuildExecCmd(tt.args, &fakeUnikernel{})
+			assert.Error(t, err)
+		})
+	}
 }

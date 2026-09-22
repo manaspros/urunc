@@ -484,8 +484,9 @@ func setupConsole(monRootfs string) error {
 // monitor execution: the binary, supporting libraries and data directories.
 // These are the host files that need to be mirrored inside the monitor rootfs.
 // In addition, it also includes the special filesystems required for the monitor
-// execution (e.g. procfs)
-func mountsForMonitor(monitorPath string, monitorDataPath string) ([]specs.Mount, error) {
+// execution (e.g. procfs). If firmwarePath is set, the firmware image is
+// mirrored read-only at the same path, so the monitor can be pointed at it.
+func mountsForMonitor(monitorPath string, monitorDataPath string, firmwarePath string) ([]specs.Mount, error) {
 	procMount := specs.Mount{
 		Type:        "proc",
 		Source:      "proc",
@@ -545,6 +546,20 @@ func mountsForMonitor(monitorPath string, monitorDataPath string) ([]specs.Mount
 		} else if !os.IsNotExist(err) {
 			return nil, err
 		}
+	}
+
+	if firmwarePath != "" {
+		if !filepath.IsAbs(firmwarePath) {
+			return nil, fmt.Errorf("firmware path %q is not absolute", firmwarePath)
+		}
+		info, err := os.Stat(firmwarePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get info of firmware %s: %w", firmwarePath, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("firmware path %q is not a regular file", firmwarePath)
+		}
+		mounts = append(mounts, bindMount(firmwarePath, firmwarePath, true, true))
 	}
 
 	return mounts, nil

@@ -99,9 +99,14 @@ func (q *Qemu) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel) ([]str
 		)
 	}
 
-	// TODO: explore alternative implementations
-	if runtime.GOARCH == "arm64" {
-		exArgs = append(exArgs, "-M", "virt")
+	machineArgs, err := q.machineArgs(args, qemuMem)
+	if err != nil {
+		return nil, err
+	}
+	exArgs = append(exArgs, machineArgs...)
+
+	if args.FirmwarePath != "" {
+		exArgs = append(exArgs, "-bios", args.FirmwarePath)
 	}
 
 	exArgs = append(exArgs, "-kernel", args.UnikernelPath)
@@ -114,11 +119,8 @@ func (q *Qemu) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel) ([]str
 			}
 			exArgs = append(exArgs, "-netdev", netdevArg)
 
-			devType := "virtio-net-pci"
-			if runtime.GOARCH == "arm64" {
-				devType = "virtio-net-device"
-			}
-			netCliDev := fmt.Sprintf("%s,netdev=net0,host_mtu=%d,mac=%s", devType, args.Net.MTU, args.Net.MAC)
+			devType := virtioDevice("virtio-net", args)
+			netCliDev := fmt.Sprintf("%s,netdev=net0,host_mtu=%d,mac=%s%s", devType, args.Net.MTU, args.Net.MAC, virtioTEEOptions(args))
 			exArgs = append(exArgs, "-device", netCliDev)
 		} else {
 			exArgs = append(exArgs, netcli...)
@@ -130,7 +132,10 @@ func (q *Qemu) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel) ([]str
 	blockArgs := ukernel.MonitorBlockCli()
 	for _, blockArg := range blockArgs {
 		if blockArg.ID != "" && blockArg.Path != "" {
-			devArg := fmt.Sprintf("virtio-blk-pci,serial=%s,drive=%s,scsi=off", blockArg.ID, blockArg.ID)
+			devArg := fmt.Sprintf("%s,serial=%s,drive=%s%s", virtioDevice("virtio-blk", args), blockArg.ID, blockArg.ID, virtioTEEOptions(args))
+			if !usesVirtioMMIO(args) {
+				devArg += ",scsi=off"
+			}
 			drvArg := fmt.Sprintf("format=raw,if=none,id=%s,file=%s", blockArg.ID, blockArg.Path)
 			exArgs = append(exArgs, "-device", devArg, "-drive", drvArg)
 		} else if len(blockArg.ExactArgs) > 0 {
@@ -149,6 +154,9 @@ func (q *Qemu) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel) ([]str
 		sharedFSOption := ukernel.MonitorSharedfsCli(args.Sharedfs.Type, args.Sharedfs.Path)
 		exArgs = append(exArgs, sharedFSOption...)
 	case "virtiofs":
+		if args.TEE != types.TEENone {
+			return nil, fmt.Errorf("virtiofs is not supported for confidential guests")
+		}
 		objArg := fmt.Sprintf("memory-backend-file,id=mem,size=%sM,mem-path=/tmp,share=on", qemuMem)
 		exArgs = append(exArgs,
 			"-object", objArg,
@@ -178,4 +186,102 @@ func (q *Qemu) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel) ([]str
 // PreExec performs pre-execution setup. QEMU has no special pre-exec requirements.
 func (q *Qemu) PreExec(_ types.ExecArgs) error {
 	return nil
+}
+
+// usesVirtioMMIO reports whether the selected machine exposes virtio devices
+// over MMIO (microvm on x86, virt on arm64) instead of PCI.
+func usesVirtioMMIO(args types.ExecArgs) bool {
+	if runtime.GOARCH == "arm64" {
+		return true
+	}
+	return args.Machine == types.MachineMicrovm
+}
+
+// virtioDevice returns the QEMU device name of a virtio device for the
+// selected machine's transport, e.g. virtio-net-pci or virtio-net-device.
+func virtioDevice(base string, args types.ExecArgs) string {
+	if usesVirtioMMIO(args) {
+		return base + "-device"
+	}
+	return base + "-pci"
+}
+
+// virtioTEEOptions returns the extra device options a confidential guest
+// requires: the guest kernel refuses virtio devices that do not advertise
+// VIRTIO_F_ACCESS_PLATFORM (iommu_platform) and, on PCI, legacy devices.
+func virtioTEEOptions(args types.ExecArgs) string {
+	if args.TEE == types.TEENone {
+		return ""
+	}
+	if usesVirtioMMIO(args) {
+		return ",iommu_platform=on"
+	}
+	return ",iommu_platform=on,disable-legacy=on"
+}
+
+// machineArgs builds the -M (machine) and, for confidential guests, the
+// -object arguments. On x86 the default machine (pc) is left implicit, so
+// the command line of existing deployments does not change.
+func (q *Qemu) machineArgs(args types.ExecArgs, memMB string) ([]string, error) {
+	var machine string
+	switch {
+	case runtime.GOARCH == "arm64":
+		// TODO: explore alternative implementations
+		machine = "virt"
+	case args.Machine == "" || args.Machine == types.MachinePC:
+		machine = ""
+	case args.Machine == types.MachineQ35:
+		machine = types.MachineQ35
+	case args.Machine == types.MachineMicrovm:
+		// ACPI is required for the guest to find the virtio-mmio devices
+		// and to shut down cleanly.
+		machine = "microvm,acpi=on"
+	default:
+		return nil, fmt.Errorf("unsupported qemu machine type %q", args.Machine)
+	}
+
+	var exArgs []string
+	switch args.TEE {
+	case types.TEENone:
+		if machine != "" {
+			exArgs = append(exArgs, "-M", machine)
+		}
+	case types.TEESevSnp:
+		if runtime.GOARCH != "amd64" {
+			return nil, fmt.Errorf("sev-snp guests are only supported on x86_64")
+		}
+		if args.FirmwarePath == "" {
+			return nil, fmt.Errorf("sev-snp guests require a firmware (firmware_path)")
+		}
+		if machine == "" {
+			machine = types.MachinePC
+		}
+		// kernel-hashes=on puts the hashes of the kernel, the initrd and the
+		// command line in the launch measurement, so a firmware that honors
+		// the hashes table (OVMF AmdSev, Oak stage0 with sev_kernel_hashes)
+		// verifies the fw_cfg-provided boot payload.
+		exArgs = append(exArgs,
+			"-M", machine+",confidential-guest-support=sev0,memory-backend=ram1",
+			"-object", "sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=on",
+			"-object", fmt.Sprintf("memory-backend-memfd,id=ram1,size=%sM,share=true,prealloc=false", memMB),
+		)
+	case types.TEETdx:
+		if runtime.GOARCH != "amd64" {
+			return nil, fmt.Errorf("tdx guests are only supported on x86_64")
+		}
+		if args.FirmwarePath == "" {
+			return nil, fmt.Errorf("tdx guests require a firmware (firmware_path)")
+		}
+		if machine != types.MachineQ35 {
+			return nil, fmt.Errorf("tdx guests require the q35 machine type")
+		}
+		exArgs = append(exArgs,
+			"-M", machine+",kernel-irqchip=split,confidential-guest-support=tdx0",
+			"-object", "tdx-guest,id=tdx0",
+		)
+	default:
+		return nil, fmt.Errorf("unsupported tee type %q", args.TEE)
+	}
+
+	return exArgs, nil
 }

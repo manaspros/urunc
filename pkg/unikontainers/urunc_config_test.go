@@ -360,6 +360,55 @@ func TestUruncConfigFromMap(t *testing.T) {
 
 }
 
+func TestUruncConfigMachineFirmwareTEERoundTrip(t *testing.T) {
+	t.Parallel()
+
+	config := defaultUruncConfig()
+	qemu := config.Monitors["qemu"]
+	qemu.Machine = "microvm"
+	qemu.FirmwarePath = "/usr/share/urunc/stage0_bin"
+	qemu.TEE = "sev-snp"
+	config.Monitors["qemu"] = qemu
+
+	cfgMap := config.Map()
+	assert.Equal(t, "microvm", cfgMap["urunc_config.monitors.qemu.machine"])
+	assert.Equal(t, "/usr/share/urunc/stage0_bin", cfgMap["urunc_config.monitors.qemu.firmware_path"])
+	assert.Equal(t, "sev-snp", cfgMap["urunc_config.monitors.qemu.tee"])
+	// Monitors without the options keep them empty
+	assert.Equal(t, "", cfgMap["urunc_config.monitors.firecracker.machine"])
+
+	restored := UruncConfigFromMap(cfgMap)
+	assert.Equal(t, "microvm", restored.Monitors["qemu"].Machine)
+	assert.Equal(t, "/usr/share/urunc/stage0_bin", restored.Monitors["qemu"].FirmwarePath)
+	assert.Equal(t, "sev-snp", restored.Monitors["qemu"].TEE)
+	assert.Equal(t, "", restored.Monitors["firecracker"].TEE)
+}
+
+func TestLoadUruncConfigMachineFirmwareTEE(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	content := `
+[monitors.qemu]
+default_memory_mb = 128
+machine = "q35"
+firmware_path = "/usr/share/OVMF/OVMF.fd"
+tee = "tdx"
+`
+	err := os.WriteFile(configPath, []byte(content), 0o600)
+	assert.NoError(t, err)
+
+	config, err := LoadUruncConfig(configPath)
+	assert.NoError(t, err)
+	assert.Equal(t, "q35", config.Monitors["qemu"].Machine)
+	assert.Equal(t, "/usr/share/OVMF/OVMF.fd", config.Monitors["qemu"].FirmwarePath)
+	assert.Equal(t, "tdx", config.Monitors["qemu"].TEE)
+	assert.Equal(t, uint(128), config.Monitors["qemu"].DefaultMemoryMB)
+	// Unset options stay empty for the other monitors
+	assert.Equal(t, "", config.Monitors["firecracker"].Machine)
+}
+
 func TestUruncConfigMap(t *testing.T) {
 	t.Run("default config produces expected map", func(t *testing.T) {
 		t.Parallel()

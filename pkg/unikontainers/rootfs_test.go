@@ -16,6 +16,7 @@ package unikontainers
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -214,5 +215,56 @@ func TestNoRootfsGetMounts(t *testing.T) {
 		require.Len(t, mounts, 2)
 		assert.Equal(t, containerRootfsMountPath, mounts[0].Destination)
 		assert.NotContains(t, mounts[0].Options, "ro")
+	})
+}
+
+func TestMountsForMonitorFirmware(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	fw := filepath.Join(tmpDir, "stage0_bin")
+	assert.NoError(t, os.WriteFile(fw, []byte("fw"), 0o600))
+
+	t.Run("firmware file is bind-mounted read-only at the same path", func(t *testing.T) {
+		t.Parallel()
+		mounts, err := mountsForMonitor("/usr/local/bin/firecracker", "", fw)
+		assert.NoError(t, err)
+		var found bool
+		for _, m := range mounts {
+			if m.Source == fw {
+				found = true
+				assert.Equal(t, fw, m.Destination)
+				assert.Equal(t, "bind", m.Type)
+				assert.Contains(t, m.Options, "ro")
+			}
+		}
+		assert.True(t, found, "expected a bind mount for the firmware")
+	})
+
+	t.Run("no firmware adds no mount", func(t *testing.T) {
+		t.Parallel()
+		mounts, err := mountsForMonitor("/usr/local/bin/firecracker", "", "")
+		assert.NoError(t, err)
+		for _, m := range mounts {
+			assert.NotEqual(t, fw, m.Source)
+		}
+	})
+
+	t.Run("missing firmware is an error", func(t *testing.T) {
+		t.Parallel()
+		_, err := mountsForMonitor("/usr/local/bin/firecracker", "", filepath.Join(tmpDir, "missing"))
+		assert.Error(t, err)
+	})
+
+	t.Run("relative firmware path is an error", func(t *testing.T) {
+		t.Parallel()
+		_, err := mountsForMonitor("/usr/local/bin/firecracker", "", "relative/stage0_bin")
+		assert.Error(t, err)
+	})
+
+	t.Run("directory as firmware is an error", func(t *testing.T) {
+		t.Parallel()
+		_, err := mountsForMonitor("/usr/local/bin/firecracker", "", tmpDir)
+		assert.Error(t, err)
 	})
 }

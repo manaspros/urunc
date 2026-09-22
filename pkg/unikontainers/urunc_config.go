@@ -222,6 +222,9 @@ func (p *UruncConfig) Map() map[string]string {
 		cfgMap[prefix+"data_path"] = hvCfg.DataPath
 		cfgMap[prefix+"vhost"] = strconv.FormatBool(hvCfg.Vhost)
 		cfgMap[prefix+"socket_path"] = hvCfg.SocketPath
+		cfgMap[prefix+"machine"] = hvCfg.Machine
+		cfgMap[prefix+"firmware_path"] = hvCfg.FirmwarePath
+		cfgMap[prefix+"tee"] = hvCfg.TEE
 	}
 	for eb, ebCfg := range p.ExtraBins {
 		prefix := "urunc_config.extra_binaries." + eb + "."
@@ -271,6 +274,12 @@ func UruncConfigFromMap(cfgMap map[string]string) *UruncConfig {
 			hvCfg.DataPath = val
 		case "socket_path":
 			hvCfg.SocketPath = val
+		case "machine":
+			hvCfg.Machine = val
+		case "firmware_path":
+			hvCfg.FirmwarePath = val
+		case "tee":
+			hvCfg.TEE = val
 		case "vhost":
 			boolVal, err := strconv.ParseBool(val)
 			if err != nil {
