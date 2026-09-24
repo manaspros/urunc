@@ -40,14 +40,31 @@ Timestamp logging is now handled through a fixed schema using zerolog. The previ
 
 ## How to enable timestamping
 
-In order to capture the timestamps, a separate `containerd-shim` and container runtime must be configured in your system.
+Timestamps are enabled through the `[timestamps]` section of the `urunc`
+[configuration file](../../configuration#timestamps-configuration):
+
+```toml
+[timestamps]
+enabled = true
+destination = "/var/log/urunc/timestamps.log"
+```
+
+In order to capture the timestamps without affecting the default runtime, a
+separate `containerd-shim` and container runtime can be configured in your
+system, pointing `urunc` to a dedicated configuration file through the
+`URUNC_CONFIG_FILE` environment variable.
 
 To create the "timestamping" version of `containerd-shim-urunc-v2`:
 
 ```bash
+sudo tee /etc/urunc/config-ts.toml > /dev/null << 'EOT'
+[timestamps]
+enabled = true
+destination = "/tmp/urunc.zlog"
+EOT
 sudo tee -a /usr/local/bin/containerd-shim-uruncts-v2 > /dev/null << 'EOT'
 #!/bin/bash
-URUNC_TIMESTAMPS=1 /usr/local/bin/containerd-shim-urunc-v2 $@
+URUNC_CONFIG_FILE=/etc/urunc/config-ts.toml exec /usr/local/bin/containerd-shim-urunc-v2 "$@"
 EOT
 sudo chmod +x /usr/local/bin/containerd-shim-uruncts-v2
 ```
@@ -74,7 +91,8 @@ Now we need to run a unikernel using the new container runtime `uruncts`:
 sudo nerdctl run --rm --snapshotter devmapper --runtime io.containerd.uruncts.v2 harbor.nbfc.io/nubificus/urunc/hello-hvt-rumprun:latest
 ```
 
-The timestamp logs are located at `/tmp/urunc.zlog`:
+The timestamp logs are located at the configured `destination`
+(`/tmp/urunc.zlog` in the example above):
 
 ```console
 $ cat /tmp/urunc.zlog | grep TS
@@ -85,7 +103,12 @@ $ cat /tmp/urunc.zlog | grep TS
 # ... (rest of the output)
 ```
 
-> Note: the timestamp destination (`/tmp/urunc.zlog`) is hardcoded for the time being.
+> Note: `urunc` records nothing after it `execve`s the monitor (TS18), since
+> no `urunc` process is left. To measure the guest boot, let the application
+> print a marker (e.g. `URUNC_GUEST_READY`) on its console and read the time
+> at which the shim received it with `nerdctl logs -t`. The helpers
+> `guestReadyTimestamp` and `guestReadyDiff` in
+> `script/performance/__modules__.py` do exactly that.
 
 ## Gathering the timestamps
 

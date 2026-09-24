@@ -13,8 +13,14 @@
 # limitations under the License.
 
 from json import loads, dump
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from subprocess import run, PIPE
+from datetime import datetime, timezone
+
+# The marker a guest application prints on its console when it is up. The
+# containerd shim timestamps every console line, so the marker gives the
+# only "guest ready" timestamp available after urunc execve's the monitor.
+GUEST_READY_MARKER = "URUNC_GUEST_READY"
 
 
 class Timestamp:
@@ -147,6 +153,59 @@ def deleteContainer() -> bool:
     response = cmd.stdout
     containerID = response.splitlines()[-1]
     return containerID == "redis-test"
+
+
+def parseLogTimestamp(stamp: str) -> int:
+    """Convert an RFC3339Nano timestamp (as printed by `nerdctl logs -t`)
+    to Unix nanoseconds, the unit of the urunc timestamps."""
+    base, _, rest = stamp.partition('.')
+    frac = ''
+    tz = 'Z'
+    if rest:
+        i = 0
+        while i < len(rest) and rest[i].isdigit():
+            i += 1
+        frac = rest[:i]
+        tz = rest[i:] or 'Z'
+    else:
+        if base.endswith('Z'):
+            base = base[:-1]
+        elif '+' in base[10:] or '-' in base[10:]:
+            idx = max(base.rfind('+'), base.rfind('-'))
+            tz = base[idx:]
+            base = base[:idx]
+    if tz == 'Z':
+        tz = '+00:00'
+    dt = datetime.fromisoformat(base + tz)
+    secs = int(dt.astimezone(timezone.utc).timestamp())
+    nanos = int((frac + '000000000')[:9]) if frac else 0
+    return secs * 1_000_000_000 + nanos
+
+
+def guestReadyTimestamp(containerName: str,
+                        marker: str = GUEST_READY_MARKER) -> Optional[int]:
+    """Return the Unix-nanosecond timestamp of the first console line of
+    the container that contains the marker, or None if it never appeared.
+    Relies on `nerdctl logs -t`, which prefixes each line with the time at
+    which the shim received it."""
+    cmd = run(["nerdctl", "logs", "-t", containerName],
+              stdout=PIPE, stderr=PIPE, text=True)
+    for line in cmd.stdout.splitlines() + cmd.stderr.splitlines():
+        if marker not in line:
+            continue
+        stamp = line.split(' ', 1)[0]
+        try:
+            return parseLogTimestamp(stamp)
+        except ValueError:
+            continue
+    return None
+
+
+def guestReadyDiff(series: 'TimestampSeries', readyNs: int) -> TimestampDiff:
+    """Build the TS18 -> guest ready diff for a timestamp series."""
+    last = series.sorted[-1]
+    ready = Timestamp(tsID="GUEST_READY", timestamp=readyNs)
+    return TimestampDiff.fromTimestamps(start=last, stop=ready)
 
 
 def myprint(msg: str):
