@@ -299,12 +299,16 @@ func (u *Unikontainer) SetRunningState() error {
 	return u.saveContainerState()
 }
 
+// newNetworkManager builds the network manager SetupNet uses. Tests replace
+// it with a fake.
+var newNetworkManager = network.NewNetworkManager
+
 // SetupNet creates the sandbox's network device (tap) in the current network
 // namespace and returns its parameters; uid and gid own the tap device.
 func SetupNet(networkType string, uid, gid uint32) (types.NetDevParams, error) {
 	uniklog.WithField("network type", networkType).Debug("Retrieved network type")
 	netArgs := types.NetDevParams{}
-	netManager, err := network.NewNetworkManager(networkType)
+	netManager, err := newNetworkManager(networkType)
 	if err != nil {
 		return netArgs, fmt.Errorf("failed to create network manager for %s type: %v", networkType, err)
 	}
