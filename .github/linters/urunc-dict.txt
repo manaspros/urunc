@@ -485,3 +485,5 @@ sworker
 urunce
 zyfy
 preopen
+parms
+eaction
