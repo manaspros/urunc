@@ -129,7 +129,7 @@ type ExecArgs struct {
 	UnikernelPath string   // The path of the unikernel inside rootfs
 	InitrdPath    string   // The path to the initrd of the unikernel
 	AgentVsockCID int      // Guest CID of the vhost-vsock device for the in-guest exec agent; 0 disables it
-	AgentVsockUDS string   // firecracker only: monitor-rootfs path of the agent's vsock unix socket (qemu uses host vhost-vsock instead)
+	AgentVsockUDS string   // firecracker, cloud-hypervisor and hvi: monitor-rootfs path of the agent's vsock unix socket (qemu uses host vhost-vsock instead)
 	VAccelType    string   // Specifies the vAccel acceleration type(e.g. vsock). When empty, vAccel is disabled
 	VSockDevPath  string   // The directory inside the monitor rootfs with the vAccel unix sockets
 	VSockDevID    int      // The guest-cid
