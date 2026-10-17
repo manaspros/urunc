@@ -175,6 +175,57 @@ func TestHviBuildExecCmdIntrospectSock(t *testing.T) {
 	assert.Equal(t, "/urunc-telem.sock", got)
 }
 
+// A virtiofs rootfs is served by the virtiofsd that preStartCmd starts. hvi
+// gets the daemon's socket under the tag the boot line mounts as root, and
+// nothing else about the export.
+func TestHviBuildExecCmdVirtiofs(t *testing.T) {
+	t.Parallel()
+
+	hvi := &Hvi{binaryPath: "/usr/local/bin/hvi", binary: HviBinary}
+	assert.True(t, hvi.SupportsSharedfs("virtio"))
+	assert.False(t, hvi.SupportsSharedfs("9p"))
+
+	argv, err := hvi.BuildExecCmd(types.ExecArgs{
+		KernelPath: testHviKernel,
+		Sharedfs:   types.SharedfsParams{Type: "virtiofs", Path: "/rootfs"},
+	}, &fakeUnikernel{})
+	require.NoError(t, err)
+	got, present := flagValue(argv, "--fs")
+	assert.True(t, present, "expected --fs in %v", argv)
+	assert.Equal(t, "tag=fs0,socket=/tmp/vhostqemu", got)
+	assert.Equal(t, 1, countFlag(argv, "--fs"), "argv: %v", argv)
+	assert.Equal(t, 0, countFlag(argv, "--disk"), "a virtiofs root needs no disk: %v", argv)
+
+	argv, err = hvi.BuildExecCmd(types.ExecArgs{KernelPath: testHviKernel}, &fakeUnikernel{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, countFlag(argv, "--fs"), "argv: %v", argv)
+}
+
+// The guest attaches to the container's tap with its MAC. hvi's built-in
+// stack (--net-stub, once --net) forwards no traffic.
+func TestHviBuildExecCmdTap(t *testing.T) {
+	t.Parallel()
+
+	hvi := &Hvi{binaryPath: "/usr/local/bin/hvi", binary: HviBinary}
+	argv, err := hvi.BuildExecCmd(types.ExecArgs{
+		KernelPath: testHviKernel,
+		Net:        types.NetDevParams{TapDev: "tap0_urunc", MAC: "02:00:00:00:00:01"},
+	}, &fakeUnikernel{})
+	require.NoError(t, err)
+	tap, present := flagValue(argv, "--net-tap")
+	assert.True(t, present, "expected --net-tap in %v", argv)
+	assert.Equal(t, "tap0_urunc", tap)
+	mac, present := flagValue(argv, "--net-mac")
+	assert.True(t, present, "expected --net-mac in %v", argv)
+	assert.Equal(t, "02:00:00:00:00:01", mac)
+	assert.Equal(t, 0, countFlag(argv, "--net"), "argv: %v", argv)
+	assert.Equal(t, 0, countFlag(argv, "--net-stub"), "argv: %v", argv)
+
+	argv, err = hvi.BuildExecCmd(types.ExecArgs{KernelPath: testHviKernel}, &fakeUnikernel{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, countFlag(argv, "--net-tap"), "argv: %v", argv)
+}
+
 // TestHviBuildExecCmdNeedsKernel guards the one hard requirement: hvi has no
 // default kernel, so an image with neither a kernel nor a unikernel path must
 // fail here rather than at exec time.

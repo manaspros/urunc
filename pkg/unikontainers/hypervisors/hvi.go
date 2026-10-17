@@ -37,13 +37,25 @@ const (
 	telemControlSockEnv = "FIRECRACKER_TELEM_CONTROL_SOCK"
 	// introspectIntervalEnv carries the self-introspection cadence in seconds.
 	introspectIntervalEnv = "VMI_INTROSPECT_INTERVAL"
+
+	// hviVirtiofsTag is the tag the Linux boot line mounts as root
+	// (root=fs0 rootfstype=virtiofs), the same one the Cloud Hypervisor and
+	// QEMU backends use.
+	hviVirtiofsTag = "fs0"
+	// hviVirtiofsSocket is where sharedfsRootfs.preStartCmd tells virtiofsd
+	// to listen, inside the monitor's own /tmp. Cloud Hypervisor and QEMU
+	// connect to the same path.
+	hviVirtiofsSocket = "/tmp/vhostqemu"
 )
 
-// Hvi runs a Linux guest with the NOFireAI/hvi monitor. It is a KVM backend
-// with initrd and single-block-device support. HVI takes plain CLI arguments,
-// so this monitor builds an argv in the same style as the Solo5 and QEMU
-// backends. Optional HVI capabilities are enabled only when their corresponding
-// execution settings are present.
+// Hvi runs a Linux guest with the hvi monitor on KVM. The rootfs arrives as
+// an initrd, as the single block device, or as a virtio-fs export served by
+// the virtiofsd urunc starts before the monitor: hvi connects to the daemon's
+// vhost-user socket and is the virtio transport in front of it, as Cloud
+// Hypervisor is. hvi takes plain CLI arguments, so this monitor builds an
+// argv in the same style as the Solo5 and QEMU backends. Optional hvi
+// capabilities are enabled only when their corresponding execution settings
+// are present.
 type Hvi struct {
 	binaryPath string
 	binary     string
@@ -63,10 +75,11 @@ func (h *Hvi) UsesKVM() bool {
 	return true
 }
 
-// SupportsSharedfs reports whether hvi can share a host directory. It has no
-// virtiofs device, so the rootfs has to arrive as a block device or an initrd.
-func (h *Hvi) SupportsSharedfs(_ string) bool {
-	return false
+// SupportsSharedfs reports whether hvi can share a host directory. virtio-fs
+// is served through a vhost-user daemon the runtime starts, so the answer is
+// the same as Cloud Hypervisor's; there is no 9p device.
+func (h *Hvi) SupportsSharedfs(fsType string) bool {
+	return fsType == "virtio"
 }
 
 // Path returns the path to the hvi binary.
@@ -148,11 +161,20 @@ func (h *Hvi) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel) ([]stri
 	if disk != "" {
 		cmd = append(cmd, "--disk", disk)
 	}
-	// hvi reaches the network through the same gateway socket QEMU uses; a bare
-	// --net would give the guest hvi's built-in user-space stack instead, which
-	// is not the container's network identity.
+	// The export is the daemon's: its directory, write permission and cache
+	// policy are virtiofsd's options, set in preStartCmd. hvi only needs the
+	// socket, and waits for it, so the two may start at once.
+	if args.Sharedfs.Type == "virtiofs" {
+		cmd = append(cmd, "--fs", "tag="+hviVirtiofsTag+",socket="+hviVirtiofsSocket)
+	}
+	// The guest attaches to the tap urunc created in the container's network
+	// namespace, with the MAC the boot line's ip= was derived for. hvi's
+	// built-in stack (--net-stub) forwards no traffic.
 	if args.Net.TapDev != "" {
-		cmd = append(cmd, "--net")
+		cmd = append(cmd, "--net-tap", args.Net.TapDev)
+		if args.Net.MAC != "" {
+			cmd = append(cmd, "--net-mac", args.Net.MAC)
+		}
 	}
 	if args.ContainerID != "" {
 		cmd = append(cmd, "--sandbox-id", args.ContainerID)

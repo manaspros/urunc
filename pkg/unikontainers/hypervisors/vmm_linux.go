@@ -39,7 +39,8 @@ var vmmFactories = map[VmmType]VMMFactory{
 			return &Qemu{binary: binary, binaryPath: binaryPath, vhost: vhost}
 		},
 	},
-	// hvi: the introspection VMM. No vhost, no shared-fs; it takes CLI args.
+	// hvi: the introspection VMM. No vhost; virtio-fs through virtiofsd; it
+	// takes CLI args.
 	HviVmm: {
 		binary: HviBinary,
 		createFunc: func(binary, binaryPath string, _ bool) types.VMM {

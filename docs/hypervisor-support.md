@@ -186,6 +186,34 @@ An example guest:
 sudo nerdctl run --rm -ti --runtime io.containerd.urunc.v2 harbor.nbfc.io/nubificus/urunc/nginx-cloud-hypervisor-linux-raw:latest
 ```
 
+### hvi
+
+[hvi](https://github.com/brig-sh/hvi-vmm) is a small VMM for Linux guests,
+built to be observed: it owns guest RAM and the virtio devices, so it can
+report what the guest does at the device boundary. On Linux it runs on KVM, on
+x86-64 and aarch64. The same binary runs on macOS over Hypervisor.framework,
+which is how [hull](https://github.com/NOFireAI/hull) uses it.
+
+#### Installing hvi
+
+hvi is a single static binary. Build it from the repository with the Rust
+toolchain it pins, or take a release build, and place it in the `PATH` as
+`hvi`, or name its path in `urunc`'s config under `[monitors.hvi]`.
+
+#### hvi and `urunc`
+
+`urunc` attaches the guest to its tap device with hvi's `--net-tap`, passes
+the initrd and the single block device hvi supports, and, for a virtiofs
+rootfs, starts `virtiofsd` and hands hvi the daemon's socket with
+`--fs tag=fs0,socket=...`: hvi is the virtio transport in front of the daemon,
+as Cloud Hypervisor is. A container that asks for more than one block device
+is refused rather than booted without a volume. The kernel has to be the
+image hvi loads directly: a `bzImage` on x86-64 and an `Image` on aarch64.
+
+Supported guests with `urunc`:
+
+- [Linux](../unikernel-support#linux)
+
 ### Solo5-hvt
 
 [Solo5-hvt](https://github.com/Solo5/solo5) is a lightweight, high-performance

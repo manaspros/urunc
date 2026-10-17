@@ -22,6 +22,7 @@ package unikernels
 import (
 	"fmt"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -88,6 +89,14 @@ func (l *Linux) CommandString() (string, error) {
 		// With no UART in use, also skip the 8250 driver probing at
 		// boot. Requires CONFIG_VIRTIO_CONSOLE=y in the guest kernel.
 		consoleStr = "console=hvc0 8250.nr_uarts=0"
+	case "hvi":
+		// hvi has no virtio console. Its serial port follows the guest
+		// architecture: a PL011 on arm64 and a 16550 on x86-64.
+		if runtime.GOARCH == "arm64" {
+			consoleStr = "console=ttyAMA0"
+		} else {
+			consoleStr = "console=ttyS0"
+		}
 	default:
 		consoleStr = "console=ttyS0"
 	}
