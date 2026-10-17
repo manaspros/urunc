@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 	"golang.org/x/sys/unix"
@@ -16,11 +17,17 @@ const (
 	HviBinary string  = "hvi"
 )
 
-// HviDarwin runs an arm64 Linux guest with Hypervisor.framework and HVI's
+// HviDarwin runs an arm64 Linux guest with Hypervisor.framework and hvi's
 // in-process virtio devices. Generic container boot exports the unpacked OCI
-// directory read-only through HVI's virtio-fs backend; the initrd supplies the
-// writable overlay. Additional tagged directories retain their requested
+// directory read-only through hvi's virtio-fs backend; the initrd supplies the
+// writable overlay. Additional tagged directories keep their requested
 // read-only/read-write mode.
+//
+// Every export is one --fs, in the comma-separated form hvi took from Cloud
+// Hypervisor: tag=<tag>,path=<dir>[,readonly=on][,uid=<n>,gid=<n>]. The
+// older --share-ro/--share-rw pairs and the process-wide --fs-uid/--fs-gid
+// still parse, but hvi prints a note for each, and uid= and gid= let every
+// export carry its own owner.
 type HviDarwin struct {
 	binaryPath string
 }
@@ -51,15 +58,6 @@ func (h *HviDarwin) BuildExecCmd(args types.ExecArgs, _ types.Unikernel) ([]stri
 		"--mem-mib", strconv.FormatUint(mem, 10),
 		"--cpus", strconv.FormatUint(uint64(vcpus), 10),
 	}
-	// Tell the file server who the workload is, so the shared directories
-	// come back owned by it. Only when it is not root: root is hvi's default,
-	// and not passing the flags keeps this working against an hvi that
-	// predates them.
-	if args.GuestUID != 0 || args.GuestGID != 0 {
-		cmd = append(cmd,
-			"--fs-uid", strconv.FormatUint(uint64(args.GuestUID), 10),
-			"--fs-gid", strconv.FormatUint(uint64(args.GuestGID), 10))
-	}
 	if args.InitrdPath != "" {
 		cmd = append(cmd, "--initramfs", args.InitrdPath)
 	}
@@ -74,15 +72,26 @@ func (h *HviDarwin) BuildExecCmd(args types.ExecArgs, _ types.Unikernel) ([]stri
 		if path == "" || tag == "" {
 			return fmt.Errorf("hvi virtio-fs exports require a path and tag")
 		}
+		// The option string is split on commas, with no escape, so a comma in
+		// either value would be read as the start of the next option.
+		if strings.ContainsRune(path, ',') || strings.ContainsRune(tag, ',') {
+			return fmt.Errorf("hvi virtio-fs export %q at %q: a comma cannot be passed in --fs", tag, path)
+		}
 		if seenTags[tag] {
 			return fmt.Errorf("duplicate hvi virtio-fs tag %q", tag)
 		}
 		seenTags[tag] = true
-		flag := "--share-rw"
+		export := "tag=" + tag + ",path=" + path
 		if readOnly {
-			flag = "--share-ro"
+			export += ",readonly=on"
 		}
-		cmd = append(cmd, flag, path, tag)
+		// Tell the file server who the workload is, so the export comes back
+		// owned by it. Only when it is not root: root is hvi's default.
+		if args.GuestUID != 0 || args.GuestGID != 0 {
+			export += ",uid=" + strconv.FormatUint(uint64(args.GuestUID), 10) +
+				",gid=" + strconv.FormatUint(uint64(args.GuestGID), 10)
+		}
+		cmd = append(cmd, "--fs", export)
 		return nil
 	}
 	if args.Sharedfs.Path != "" {
