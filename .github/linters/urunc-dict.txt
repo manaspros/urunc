@@ -482,3 +482,7 @@ urunce
 zyfy
 preopen
 fuzztime
+pidfd
+pfds
+pollin
+unreaped

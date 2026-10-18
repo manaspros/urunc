@@ -16,7 +16,9 @@ package hypervisors
 
 import (
 	"os"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/sys/unix"
@@ -134,4 +136,64 @@ func TestSignalProcessReachesSysKill(t *testing.T) {
 	pid := os.Getpid()
 	assert.NoError(t, signalProcess(pid, 0))
 	assert.Equal(t, [][2]int{{pid, 0}}, *calls)
+}
+
+func startSleeper(t testing.TB) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("sleep", "1000")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start sleep: %v", err)
+	}
+	return cmd
+}
+
+func TestKillProcessKillsRunningProcess(t *testing.T) {
+	cmd := startSleeper(t)
+	reaped := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(reaped)
+	}()
+
+	assert.NoError(t, killProcess(cmd.Process.Pid))
+	select {
+	case <-reaped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("process was not killed")
+	}
+}
+
+// A killed process stays a zombie until its parent reaps it. That must not
+// make killProcess wait for the whole timeout.
+func TestKillProcessDoesNotWaitForReaping(t *testing.T) {
+	cmd := startSleeper(t)
+	t.Cleanup(func() { _ = cmd.Wait() })
+
+	start := time.Now()
+	assert.NoError(t, killProcess(cmd.Process.Pid))
+	assert.Less(t, time.Since(start), time.Second)
+}
+
+func TestKillProcessAlreadyDead(t *testing.T) {
+	cmd := startSleeper(t)
+	pid := cmd.Process.Pid
+	assert.NoError(t, cmd.Process.Kill())
+	_ = cmd.Wait()
+
+	assert.NoError(t, killProcess(pid))
+}
+
+// BenchmarkKillProcess kills a real child that another goroutine reaps, the
+// way the containerd shim reaps the monitor.
+func BenchmarkKillProcess(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		cmd := startSleeper(b)
+		go func() { _ = cmd.Wait() }()
+		b.StartTimer()
+		if err := killProcess(cmd.Process.Pid); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

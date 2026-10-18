@@ -78,6 +78,17 @@ func killProcess(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("refusing to signal invalid pid %d", pid)
 	}
+	// Get a handle on the process before killing it. This way we can block
+	// until it exits instead of polling. pidfd_open(2) needs Linux 5.3, so
+	// when it fails for any reason other than a dead process, we fall back
+	// to polling.
+	pidFd, pidFdErr := unix.PidfdOpen(pid, 0)
+	if pidFdErr == nil {
+		defer unix.Close(pidFd)
+	} else if errors.Is(pidFdErr, unix.ESRCH) {
+		// Process already dead, nothing to do
+		return nil
+	}
 	err := sysKill(pid, unix.SIGKILL)
 	if err != nil {
 		if errors.Is(err, unix.ESRCH) {
@@ -87,6 +98,9 @@ func killProcess(pid int) error {
 		return err
 	}
 	deadline := time.Now().Add(timeout)
+	if pidFdErr == nil {
+		return waitPidFd(pidFd, pid, deadline)
+	}
 	for {
 		if err := sysKill(pid, 0); err != nil {
 			if errors.Is(err, unix.ESRCH) {
@@ -102,4 +116,28 @@ func killProcess(pid int) error {
 	}
 
 	return nil
+}
+
+// waitPidFd blocks until the process behind pidFd exits or the deadline
+// passes. A pidfd becomes readable as soon as the process exits, so a zombie
+// that nobody has reaped yet counts as dead too.
+func waitPidFd(pidFd int, pid int, deadline time.Time) error {
+	pfds := []unix.PollFd{{Fd: int32(pidFd), Events: unix.POLLIN}} //nolint:gosec // a file descriptor always fits in an int32
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("timeout waiting for pid %d to die", pid)
+		}
+		// Round up, so that we never poll for 0 ms when time is left.
+		n, err := unix.Poll(pfds, int(remaining.Milliseconds())+1)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("error waiting for pid %d to die: %w", pid, err)
+		}
+		if n > 0 {
+			return nil
+		}
+	}
 }
