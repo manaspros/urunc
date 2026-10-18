@@ -61,12 +61,22 @@ type blockRootfs struct {
 // source device as the original mount, so they can appear identical to
 // regular mounts when inspecting mount information.
 func getMountInfo(path string) (types.BlockDevParams, error) {
-	mountInfo, err := mountinfo.GetMounts(nil)
+	mountInfo, err := readMountInfo()
 	if err != nil {
-		return types.BlockDevParams{}, fmt.Errorf("failed to read mountinfo: %w", err)
+		return types.BlockDevParams{}, err
 	}
 
 	return findMountInfo(mountInfo, path)
+}
+
+// readMountInfo parses all the entries of /proc/thread-self/mountinfo.
+func readMountInfo() ([]*mountinfo.Info, error) {
+	mountInfo, err := mountinfo.GetMounts(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read mountinfo: %w", err)
+	}
+
+	return mountInfo, nil
 }
 
 // findMountInfo searches the parsed mountinfo entries for an entry mounted
@@ -210,6 +220,9 @@ func handleExplicitBlockImage(blockImg string, mountPoint string) (types.BlockDe
 // find the ones that come from a block.
 func getBlockVolumes(mounts []specs.Mount, ukernel types.Unikernel) ([]types.BlockDevParams, error) {
 	blkImgs := []types.BlockDevParams{}
+	// Parse the mount table once and parse it again only after an unmount
+	// changed it, instead of once for every bind mount.
+	var mountTable []*mountinfo.Info
 	for i, m := range mounts {
 		// We check only bind mounts
 		if m.Type != "bind" {
@@ -217,7 +230,14 @@ func getBlockVolumes(mounts []specs.Mount, ukernel types.Unikernel) ([]types.Blo
 		}
 		// Get the information of the source path
 		// from /proc/thread-self/mountinfo
-		mInfo, err := getMountInfo(m.Source)
+		if mountTable == nil {
+			var err error
+			mountTable, err = readMountInfo()
+			if err != nil {
+				return nil, err
+			}
+		}
+		mInfo, err := findMountInfo(mountTable, m.Source)
 		if errors.Is(err, ErrMountpoint) {
 			// ErrMountpoint means we did not find any
 			// such mount and hence we can skip it.
@@ -250,6 +270,8 @@ func getBlockVolumes(mounts []specs.Mount, ukernel types.Unikernel) ([]types.Blo
 			if err != nil {
 				return nil, err
 			}
+			// The mount table has changed, so drop the parsed copy.
+			mountTable = nil
 			mInfo.ID = fmt.Sprintf("vol%d", i)
 			mInfo.HostMountPoint = mInfo.MountPoint
 			mInfo.MountPoint = m.Destination

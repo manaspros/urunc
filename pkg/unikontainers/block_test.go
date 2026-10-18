@@ -15,10 +15,12 @@
 package unikontainers
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/moby/sys/mountinfo"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 )
@@ -67,6 +69,32 @@ func TestFindMountInfoEscapedPath(t *testing.T) {
 			assert.Equal(t, "/dev/sdb1", blockDev.Source)
 			assert.Equal(t, "ext4", blockDev.FsType)
 			assert.Equal(t, tt.path, blockDev.MountPoint)
+		})
+	}
+}
+
+// BenchmarkGetBlockVolumes measures getBlockVolumes for a container with n
+// bind mounts. None of the sources is a mount point, so nothing is unmounted
+// and no privileges are needed. This is the common case, e.g. the
+// /etc/hosts, /etc/resolv.conf and termination-log binds of a Pod.
+func BenchmarkGetBlockVolumes(b *testing.B) {
+	for _, n := range []int{1, 8, 16} {
+		mounts := make([]specs.Mount, 0, n)
+		for i := 0; i < n; i++ {
+			mounts = append(mounts, specs.Mount{
+				Destination: fmt.Sprintf("/vol%d", i),
+				Type:        "bind",
+				Source:      fmt.Sprintf("/nonexistent/urunc-bench/vol%d", i),
+			})
+		}
+		b.Run(fmt.Sprintf("binds=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				vols, err := getBlockVolumes(mounts, nil)
+				if err != nil || len(vols) != 0 {
+					b.Fatalf("unexpected result: %v, %v", vols, err)
+				}
+			}
 		})
 	}
 }
